@@ -1,0 +1,1661 @@
+; Little Sonata for the Apple /// - Kleine Sonate fuer den Apple ///
+
+; Mozart's "Eine kleine Klavier-Sonate fuer Anfaenger" ("Little piano sonata for beginners")
+; Mozart, K 545
+
+; APPLE3 ROM ROUTINES
+	CLRSCR = $FB7D  ; ROM
+	COUT   = $FC39
+	CROUT1 = $FD07
+	SETCVH = $FBDB
+
+; APPLE3 SCREEN and CURSOR VARIABLES
+	SCRNLOC    =    $58
+	LMARGIN    =    SCRNLOC
+	RMARGIN    =    SCRNLOC+1
+	WINTOP     =    SCRNLOC+2
+	WINBTM     =    SCRNLOC+3
+	CH         =    SCRNLOC+4
+	CV         =    SCRNLOC+5
+
+; APPLE3 SYSTEM REGISTERS
+	ENVREG  = $FFDF ; Environment Register
+
+; APPLE3 SOUND REGISTERS
+	SOUND_CLICK = $C030 ; Apple // style sound interface
+	SOUND_BEEP  = $C040
+	SOUND_DAC   = $FFE0
+
+; APPLE3 KEYBOARD REGISTERS
+	KBD_DATA    = $C000
+	KBD_MODS    = $C008
+	KBDSTRB     = $C010
+
+; SPEAKER to be used
+	SPEAKER     = SOUND_CLICK
+
+; ZERO PAGE VARIABLES
+	V1=$90
+	V2=$91
+	V3=$92
+	V4=$93
+	V5=$94
+	V6=$95
+	V7=$96
+	DataL=$97
+	DataH=$98
+
+.macro  print   MSG
+        LDA #<MSG
+        STA DataL
+	LDA #>MSG
+        STA DataH
+        JSR PRINT
+.endmacro
+
+	.org $A200
+START:
+	LDA ENVREG
+	ORA #$F2	; switch ROM and 1MHz
+	STA ENVREG
+
+	; clear keypress
+	STA KBDSTRB
+
+	JSR CLRSCR
+
+	; move cursor down
+	LDA #8
+	STA CV
+	LDA #30
+	JSR SETCVH
+
+	print TITLE1
+
+	LDA #11
+	STA CV
+	LDA #4
+	JSR SETCVH
+	print TITLE2
+
+	CLD
+	JSR MAIN         ; play music
+
+	; clear keypress
+	STA KBDSTRB
+	
+	; return to caller
+	RTS
+
+TITLE1:
+	.BYTE "MOZART",$00
+TITLE2:
+	.BYTE "LITTLE SONATA FOR THE APPLE ///",$00
+
+.proc PRINT
+	LDY #0
+@next:
+	LDA (DataL),Y
+	BEQ @last
+	ORA #$80
+	JSR COUT
+	INY
+	BNE @next
+@last:
+	RTS
+.endproc
+
+MAIN:
+	; init
+	LDA #$00
+	STA V6
+	STA V7
+	STA V1
+	STA V2
+	STA V3
+
+	; set pointer to data
+	LDA #>SONATA_DATA
+	STA DataH
+	LDA #<SONATA_DATA
+	STA DataL
+
+	LDA #$02
+	STA V4
+	STA V5
+
+	PHA      ; dummy byte to stack
+	PHA      ; dummy byte to stack
+	PHA      ; dummy byte to stack
+	BNE L2   ; unconditional jump
+
+L1:
+	INY                  ; increase offset
+	LDA (DataL),Y        ; load next byte
+	STA V4               ; store in V4
+	INY                  ; increase offset
+	LDA (DataL),Y        ; load next byte
+	STA V5               ; store in V5
+
+NEXT_BYTES:
+	LDA DataL         ; load lower address
+	CLC               ; clear carry bit
+	ADC #3            ; add 3 bytes to lower address
+	STA DataL         ; store lower address
+	BCC L2            ; carry clear? no update of upper address
+	INC DataH         ; increase upper address
+L2:
+	LDY #0                ; clear offset
+	LDA (DataL),Y         ; load next byte
+	CMP #1                ; is 1?
+	BEQ L1                ; branch: load next 2 bytes
+	BCS L3                ; branch when A>=1
+
+	PLA                   ; ignore byte from stack
+	PLA                   ; ignore byte from stack
+	PLA                   ; ignore byte from stack
+
+; get OP-Code for music voice (EOR to toggle/CMP for silence)
+GET_DATA:
+	LDX #$49              ; OP-Code "EOR #" (toggle)
+	INY                   ; increase offset
+	LDA (DataL),Y         ; load next byte
+	BNE _RTS              ; Not 0: use EOR, otherwise use CMP.
+	LDX #$C9              ; OP-Code "CMP #" (silence: disable toggling)
+_RTS:
+	RTS
+
+L3:
+	STA V3
+	JSR GET_DATA         ; OP-Code in X, data in A
+	STX L7               ; patch opcode!
+	STA V1               ; store music byte
+
+	LDX V4
+; shift A by X (X>0)
+SHIFT1:
+	LSR
+	DEX
+	BNE SHIFT1
+
+	STA CHECK_THRESHOLD+1       ; patch threshold value
+	JSR GET_DATA     ; OP-Code in X, data in A
+	STX L15          ; patch opcode!
+	STA V2           ; store music byte
+
+	LDX V5
+; shift A by X (X>0)
+SHIFT2:                  ; divide A by 2powX
+	LSR
+	DEX
+	BNE SHIFT2
+
+	STA L13+1        ; patch threshold!
+	PLA              ; get byte from stack to Y 
+	TAY              ; to Y
+	PLA              ; get byte from stack to X
+	TAX              ; to X
+	PLA              ; get byte from stack to A
+	BNE NOCLICK1
+CLICK1:
+	BIT SPEAKER ; toggle speaker
+NOCLICK1:
+	CMP #0    ; MSB set?
+	BMI L4    ; go to toggle speaker
+	NOP       ; timing nop
+	BPL L5    ; unconditional jump (no speaker)
+L4:
+	BIT SPEAKER ; toggle speaker
+L5:
+	STA V6        ; store A
+	BIT KBD_DATA  ; check if key pressed (MSB)
+	BMI _RTS      ; abort when key pressed
+	LDA V6        ; restore A
+	DEY
+	BNE CHECK_THRESHOLD
+	BEQ L6        ; unconditonal jump
+
+CHECK_THRESHOLD:
+	CPY #$1E      ; threshold value is patched!
+	BEQ L7        ; threshold is met!
+	BNE L8        ; not met, unconditional jump
+L6:
+	LDY V1
+L7:
+	EOR #$40      ; toggle voice (opcode is patched to "CMP #" for silence)
+L8:
+	BIT V6
+	BVC L10
+	BVS L9       ; unconditional jump/timing NOP
+L9:
+	BPL CLICK2   ; goto toggle speaker
+	NOP          ; timing NOP
+	BMI NOCLICK2 ; goto no speaker toggle
+L10:
+	NOP          ; timing NOP
+	BMI CLICK2   ; goto toggle speaker
+	NOP          ; timing NOP
+	BPL NOCLICK2 ; goto no speaker toggle
+CLICK2:
+	CMP SPEAKER  ; toggle speaker
+NOCLICK2:
+	DEC V7
+	BNE L12
+	DEC V3
+	BNE L12
+	BVC L11
+	BIT SPEAKER ; toggle speaker
+
+L11:
+	; push A, X, Y to stack
+	PHA
+	TXA
+	PHA
+	TYA
+	PHA
+	JMP NEXT_BYTES
+
+L12:
+	DEX
+	BNE L13
+	BEQ L14    ; unconditional branch
+L13:
+	CPX #$2D   ; compare with threshold (value is patched!)
+	BEQ L15    ; matches threshold
+	BNE L16    ; not yet matched (unconditional branch)
+
+L14:
+	LDX V2
+L15:
+	EOR #$80      ; toggle sound data (OP-code is patched to "CMP" for silence)
+L16:
+	BVS CLICK1
+	NOP           ; timing NOP
+	BVC NOCLICK1 ; unbedingter Sprung
+
+SONATA_DATA:
+.BYTE $10,$6C,$36
+.BYTE $10,$48,$36
+.BYTE $10,$56,$36
+.BYTE $10,$48,$36
+.BYTE $10,$6C,$2B
+.BYTE $10,$48,$2B
+.BYTE $10,$56,$24
+.BYTE $10,$48,$24
+.BYTE $10,$60,$39
+.BYTE $10,$48,$39
+.BYTE $10,$50,$39
+.BYTE $08,$48,$36
+.BYTE $08,$48,$30
+.BYTE $10,$6C,$36
+.BYTE $10,$48,$36
+.BYTE $10,$56,$00
+.BYTE $10,$48,$00
+.BYTE $10,$6C,$20
+.BYTE $10,$40,$20
+.BYTE $10,$50,$20
+.BYTE $10,$40,$20
+.BYTE $10,$6C,$24
+.BYTE $10,$48,$24
+.BYTE $10,$56,$1B
+.BYTE $10,$48,$1B
+.BYTE $10,$72,$24
+.BYTE $10,$48,$24
+.BYTE $04,$60,$24
+.BYTE $04,$60,$28
+.BYTE $04,$60,$24
+.BYTE $04,$60,$28
+.BYTE $08,$48,$2B
+.BYTE $08,$48,$28
+.BYTE $10,$6C,$2B
+.BYTE $10,$48,$2B
+.BYTE $10,$56,$00
+.BYTE $10,$48,$00
+.BYTE $10,$50,$40
+.BYTE $08,$50,$39
+.BYTE $08,$50,$36
+.BYTE $08,$00,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$28
+.BYTE $08,$00,$24
+.BYTE $08,$00,$20
+.BYTE $08,$00,$24
+.BYTE $08,$00,$28
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$30
+.BYTE $08,$50,$36
+.BYTE $08,$50,$39
+.BYTE $08,$50,$40
+.BYTE $10,$56,$48
+.BYTE $08,$56,$40
+.BYTE $08,$56,$39
+.BYTE $08,$00,$36
+.BYTE $08,$00,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$28
+.BYTE $08,$00,$24
+.BYTE $08,$00,$28
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$30
+.BYTE $08,$56,$36
+.BYTE $08,$56,$39
+.BYTE $08,$56,$40
+.BYTE $08,$56,$48
+.BYTE $10,$60,$50
+.BYTE $08,$60,$48
+.BYTE $08,$60,$40
+.BYTE $08,$00,$39
+.BYTE $08,$00,$36
+.BYTE $08,$00,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$28
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$30
+.BYTE $08,$00,$36
+.BYTE $08,$00,$39
+.BYTE $08,$60,$40
+.BYTE $08,$60,$48
+.BYTE $08,$60,$50
+.BYTE $10,$6C,$56
+.BYTE $08,$6C,$50
+.BYTE $08,$6C,$48
+.BYTE $08,$00,$40
+.BYTE $08,$00,$39
+.BYTE $08,$00,$36
+.BYTE $08,$00,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$30
+.BYTE $08,$00,$36
+.BYTE $08,$00,$39
+.BYTE $08,$6C,$40
+.BYTE $08,$6C,$48
+.BYTE $08,$6C,$50
+.BYTE $08,$6C,$56
+.BYTE $10,$40,$60
+.BYTE $08,$40,$56
+.BYTE $08,$40,$50
+.BYTE $08,$40,$48
+.BYTE $08,$40,$40
+.BYTE $08,$40,$39
+.BYTE $08,$40,$33
+.BYTE $08,$40,$30
+.BYTE $08,$40,$40
+.BYTE $08,$40,$39
+.BYTE $08,$40,$33
+.BYTE $08,$40,$30
+.BYTE $08,$40,$2B
+.BYTE $08,$40,$28
+.BYTE $08,$40,$24
+.BYTE $08,$50,$20
+.BYTE $08,$50,$1C
+.BYTE $08,$50,$1B
+.BYTE $08,$50,$1C
+.BYTE $08,$50,$20
+.BYTE $08,$50,$24
+.BYTE $08,$48,$28
+.BYTE $08,$48,$2B
+.BYTE $08,$40,$28
+.BYTE $08,$40,$24
+.BYTE $08,$40,$20
+.BYTE $08,$40,$24
+.BYTE $08,$40,$28
+.BYTE $08,$40,$2B
+.BYTE $08,$5A,$30
+.BYTE $08,$5A,$36
+.BYTE $08,$90,$39
+.BYTE $08,$72,$39
+.BYTE $08,$60,$24
+.BYTE $08,$48,$24
+.BYTE $08,$90,$2B
+.BYTE $08,$72,$2B
+.BYTE $08,$60,$36
+.BYTE $08,$48,$36
+.BYTE $08,$90,$30
+.BYTE $08,$72,$30
+.BYTE $08,$60,$24
+.BYTE $08,$48,$24
+.BYTE $08,$90,$2B
+.BYTE $08,$72,$2B
+.BYTE $08,$60,$36
+.BYTE $08,$48,$36
+.BYTE $20,$90,$30
+.BYTE $20,$48,$24
+.BYTE $20,$90,$48
+.BYTE $20,$90,$8F
+.BYTE $08,$66,$00
+.BYTE $08,$60,$00
+.BYTE $08,$66,$00
+.BYTE $08,$60,$00
+.BYTE $08,$66,$00
+.BYTE $08,$60,$00
+.BYTE $08,$66,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$72,$18
+.BYTE $08,$60,$18
+.BYTE $08,$72,$1C
+.BYTE $08,$60,$1C
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$20
+.BYTE $08,$60,$1C
+.BYTE $08,$72,$20
+.BYTE $08,$60,$20
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $04,$6C,$20
+.BYTE $04,$6C,$24
+.BYTE $04,$60,$20
+.BYTE $04,$60,$24
+.BYTE $04,$72,$26
+.BYTE $04,$72,$24
+.BYTE $08,$60,$26
+.BYTE $08,$80,$26
+.BYTE $08,$60,$26
+.BYTE $08,$72,$26
+.BYTE $08,$60,$26
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$72,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$80,$00
+.BYTE $08,$60,$00
+.BYTE $08,$72,$18
+.BYTE $08,$60,$18
+.BYTE $08,$72,$1C
+.BYTE $08,$60,$1C
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$20
+.BYTE $08,$60,$1C
+.BYTE $08,$72,$20
+.BYTE $08,$60,$20
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $04,$6C,$20
+.BYTE $04,$6C,$24
+.BYTE $04,$60,$20
+.BYTE $04,$60,$24
+.BYTE $04,$72,$26
+.BYTE $04,$72,$24
+.BYTE $08,$60,$26
+.BYTE $08,$80,$26
+.BYTE $08,$60,$26
+.BYTE $08,$72,$26
+.BYTE $08,$60,$26
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$72,$00
+.BYTE $08,$60,$00
+.BYTE $08,$80,$00
+.BYTE $08,$60,$00
+.BYTE $08,$00,$18
+.BYTE $08,$72,$18
+.BYTE $08,$60,$18
+.BYTE $08,$48,$18
+.BYTE $08,$39,$00
+.BYTE $08,$18,$39
+.BYTE $08,$1C,$39
+.BYTE $08,$24,$39
+.BYTE $08,$2B,$00
+.BYTE $08,$6C,$2B
+.BYTE $08,$56,$2B
+.BYTE $08,$48,$2B
+.BYTE $08,$36,$00
+.BYTE $08,$2B,$36
+.BYTE $08,$24,$36
+.BYTE $08,$2B,$36
+.BYTE $08,$1B,$00
+.BYTE $08,$80,$1B
+.BYTE $08,$6C,$1B
+.BYTE $08,$4C,$1B
+.BYTE $08,$36,$00
+.BYTE $08,$1B,$36
+.BYTE $08,$20,$36
+.BYTE $08,$26,$36
+.BYTE $08,$30,$00
+.BYTE $08,$72,$30
+.BYTE $08,$60,$30
+.BYTE $08,$4C,$30
+.BYTE $08,$39,$00
+.BYTE $08,$30,$39
+.BYTE $08,$26,$39
+.BYTE $08,$30,$39
+.BYTE $08,$1C,$00
+.BYTE $08,$90,$1C
+.BYTE $08,$72,$1C
+.BYTE $08,$56,$1C
+.BYTE $08,$48,$00
+.BYTE $08,$1C,$48
+.BYTE $08,$24,$48
+.BYTE $08,$2B,$48
+.BYTE $08,$36,$00
+.BYTE $08,$80,$36
+.BYTE $08,$6C,$36
+.BYTE $08,$56,$36
+.BYTE $08,$40,$00
+.BYTE $08,$36,$40
+.BYTE $08,$2B,$40
+.BYTE $08,$36,$40
+.BYTE $08,$20,$00
+.BYTE $08,$98,$20
+.BYTE $08,$80,$20
+.BYTE $08,$60,$20
+.BYTE $08,$4C,$00
+.BYTE $08,$20,$4C
+.BYTE $08,$26,$4C
+.BYTE $08,$30,$4C
+.BYTE $08,$39,$00
+.BYTE $08,$90,$39
+.BYTE $08,$72,$39
+.BYTE $08,$60,$39
+.BYTE $08,$48,$00
+.BYTE $08,$24,$48
+.BYTE $08,$30,$48
+.BYTE $08,$39,$48
+.BYTE $10,$6C,$40
+.BYTE $10,$6C,$40
+.BYTE $10,$6C,$40
+.BYTE $08,$6C,$40
+.BYTE $08,$6C,$39
+.BYTE $10,$6C,$36
+.BYTE $08,$6C,$36
+.BYTE $08,$6C,$2D
+.BYTE $10,$6C,$2B
+.BYTE $08,$6C,$2B
+.BYTE $08,$6C,$22
+.BYTE $10,$6C,$20
+.BYTE $10,$6C,$20
+.BYTE $10,$6C,$20
+.BYTE $04,$6C,$1C
+.BYTE $04,$6C,$20
+.BYTE $04,$6C,$22
+.BYTE $04,$6C,$20
+.BYTE $10,$6C,$1B
+.BYTE $10,$6C,$20
+.BYTE $10,$6C,$1B
+.BYTE $10,$6C,$20
+.BYTE $08,$60,$1C
+.BYTE $08,$39,$1C
+.BYTE $08,$48,$24
+.BYTE $08,$39,$24
+.BYTE $08,$60,$18
+.BYTE $08,$39,$18
+.BYTE $08,$48,$18
+.BYTE $08,$39,$18
+.BYTE $08,$60,$18
+.BYTE $08,$39,$18
+.BYTE $08,$48,$18
+.BYTE $08,$39,$18
+.BYTE $08,$60,$1B
+.BYTE $08,$39,$1C
+.BYTE $08,$48,$20
+.BYTE $08,$39,$24
+.BYTE $04,$60,$20
+.BYTE $04,$60,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$4C,$20
+.BYTE $04,$4C,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$60,$20
+.BYTE $04,$60,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$4C,$20
+.BYTE $04,$4C,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$60,$20
+.BYTE $04,$60,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$4C,$20
+.BYTE $04,$4C,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$60,$20
+.BYTE $04,$60,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$4C,$20
+.BYTE $04,$4C,$1C
+.BYTE $04,$36,$24
+.BYTE $04,$36,$20
+.BYTE $20,$48,$24
+.BYTE $08,$00,$24
+.BYTE $08,$00,$30
+.BYTE $08,$00,$24
+.BYTE $08,$00,$1C
+.BYTE $08,$00,$18
+.BYTE $08,$00,$1C
+.BYTE $08,$00,$24
+.BYTE $08,$00,$1C
+.BYTE $08,$36,$1B
+.BYTE $08,$36,$20
+.BYTE $08,$36,$26
+.BYTE $08,$36,$20
+.BYTE $20,$30,$24
+.BYTE $08,$00,$48
+.BYTE $08,$00,$60
+.BYTE $08,$00,$48
+.BYTE $08,$00,$39
+.BYTE $08,$00,$30
+.BYTE $08,$00,$39
+.BYTE $08,$00,$48
+.BYTE $08,$00,$39
+.BYTE $08,$6C,$36
+.BYTE $08,$6C,$40
+.BYTE $08,$6C,$4C
+.BYTE $08,$6C,$40
+.BYTE $20,$72,$48
+.BYTE $20,$90,$1C
+.BYTE $20,$90,$24
+.BYTE $20,$00,$00
+.BYTE $01,$02,$02
+.BYTE $10,$6C,$36
+.BYTE $10,$48,$36
+.BYTE $10,$56,$36
+.BYTE $10,$48,$36
+.BYTE $10,$6C,$2B
+.BYTE $10,$48,$2B
+.BYTE $10,$56,$24
+.BYTE $10,$48,$24
+.BYTE $10,$60,$39
+.BYTE $10,$48,$39
+.BYTE $10,$50,$39
+.BYTE $08,$48,$36
+.BYTE $08,$48,$30
+.BYTE $10,$6C,$36
+.BYTE $10,$48,$36
+.BYTE $10,$56,$00
+.BYTE $10,$48,$00
+.BYTE $10,$6C,$20
+.BYTE $10,$40,$20
+.BYTE $10,$50,$20
+.BYTE $10,$40,$20
+.BYTE $10,$6C,$24
+.BYTE $10,$48,$24
+.BYTE $10,$56,$1B
+.BYTE $10,$48,$1B
+.BYTE $10,$72,$24
+.BYTE $10,$48,$24
+.BYTE $04,$60,$24
+.BYTE $04,$60,$28
+.BYTE $04,$60,$24
+.BYTE $04,$60,$28
+.BYTE $08,$48,$2B
+.BYTE $08,$48,$28
+.BYTE $10,$6C,$2B
+.BYTE $10,$48,$2B
+.BYTE $10,$56,$00
+.BYTE $10,$48,$00
+.BYTE $10,$50,$40
+.BYTE $08,$50,$39
+.BYTE $08,$50,$36
+.BYTE $08,$00,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$28
+.BYTE $08,$00,$24
+.BYTE $08,$00,$20
+.BYTE $08,$00,$24
+.BYTE $08,$00,$28
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$30
+.BYTE $08,$50,$36
+.BYTE $08,$50,$39
+.BYTE $08,$50,$40
+.BYTE $10,$56,$48
+.BYTE $08,$56,$40
+.BYTE $08,$56,$39
+.BYTE $08,$00,$36
+.BYTE $08,$00,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$28
+.BYTE $08,$00,$24
+.BYTE $08,$00,$28
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$30
+.BYTE $08,$56,$36
+.BYTE $08,$56,$39
+.BYTE $08,$56,$40
+.BYTE $08,$56,$48
+.BYTE $10,$60,$50
+.BYTE $08,$60,$48
+.BYTE $08,$60,$40
+.BYTE $08,$00,$39
+.BYTE $08,$00,$36
+.BYTE $08,$00,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$28
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$30
+.BYTE $08,$00,$36
+.BYTE $08,$00,$39
+.BYTE $08,$60,$40
+.BYTE $08,$60,$48
+.BYTE $08,$60,$50
+.BYTE $10,$6C,$56
+.BYTE $08,$6C,$50
+.BYTE $08,$6C,$48
+.BYTE $08,$00,$40
+.BYTE $08,$00,$39
+.BYTE $08,$00,$36
+.BYTE $08,$00,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$30
+.BYTE $08,$00,$36
+.BYTE $08,$00,$39
+.BYTE $08,$6C,$40
+.BYTE $08,$6C,$48
+.BYTE $08,$6C,$50
+.BYTE $08,$6C,$56
+.BYTE $10,$40,$60
+.BYTE $08,$40,$56
+.BYTE $08,$40,$50
+.BYTE $08,$40,$48
+.BYTE $08,$40,$40
+.BYTE $08,$40,$39
+.BYTE $08,$40,$33
+.BYTE $08,$40,$30
+.BYTE $08,$40,$40
+.BYTE $08,$40,$39
+.BYTE $08,$40,$33
+.BYTE $08,$40,$30
+.BYTE $08,$40,$2B
+.BYTE $08,$40,$28
+.BYTE $08,$40,$24
+.BYTE $08,$50,$20
+.BYTE $08,$50,$1C
+.BYTE $08,$50,$1B
+.BYTE $08,$50,$1C
+.BYTE $08,$50,$20
+.BYTE $08,$50,$24
+.BYTE $08,$48,$28
+.BYTE $08,$48,$2B
+.BYTE $08,$40,$28
+.BYTE $08,$40,$24
+.BYTE $08,$40,$20
+.BYTE $08,$40,$24
+.BYTE $08,$40,$28
+.BYTE $08,$40,$2B
+.BYTE $08,$5A,$30
+.BYTE $08,$5A,$36
+.BYTE $08,$90,$39
+.BYTE $08,$72,$39
+.BYTE $08,$60,$24
+.BYTE $08,$48,$24
+.BYTE $08,$90,$2B
+.BYTE $08,$72,$2B
+.BYTE $08,$60,$36
+.BYTE $08,$48,$36
+.BYTE $08,$90,$30
+.BYTE $08,$72,$30
+.BYTE $08,$60,$24
+.BYTE $08,$48,$24
+.BYTE $08,$90,$2B
+.BYTE $08,$72,$2B
+.BYTE $08,$60,$36
+.BYTE $08,$48,$36
+.BYTE $20,$90,$30
+.BYTE $20,$48,$24
+.BYTE $20,$90,$48
+.BYTE $20,$90,$8F
+.BYTE $08,$66,$00
+.BYTE $08,$60,$00
+.BYTE $08,$66,$00
+.BYTE $08,$60,$00
+.BYTE $08,$66,$00
+.BYTE $08,$60,$00
+.BYTE $08,$66,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$72,$18
+.BYTE $08,$60,$18
+.BYTE $08,$72,$1C
+.BYTE $08,$60,$1C
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$20
+.BYTE $08,$60,$1C
+.BYTE $08,$72,$20
+.BYTE $08,$60,$20
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $04,$6C,$20
+.BYTE $04,$6C,$24
+.BYTE $04,$60,$20
+.BYTE $04,$60,$24
+.BYTE $04,$72,$26
+.BYTE $04,$72,$24
+.BYTE $08,$60,$26
+.BYTE $08,$80,$26
+.BYTE $08,$60,$26
+.BYTE $08,$72,$26
+.BYTE $08,$60,$26
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$72,$00
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$80,$00
+.BYTE $08,$60,$00
+.BYTE $08,$72,$18
+.BYTE $08,$60,$18
+.BYTE $08,$72,$1C
+.BYTE $08,$60,$1C
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $08,$72,$20
+.BYTE $08,$60,$1C
+.BYTE $08,$72,$20
+.BYTE $08,$60,$20
+.BYTE $08,$72,$24
+.BYTE $08,$60,$24
+.BYTE $04,$6C,$20
+.BYTE $04,$6C,$24
+.BYTE $04,$60,$20
+.BYTE $04,$60,$24
+.BYTE $04,$72,$26
+.BYTE $04,$72,$24
+.BYTE $08,$60,$26
+.BYTE $08,$80,$26
+.BYTE $08,$60,$26
+.BYTE $08,$72,$26
+.BYTE $08,$60,$26
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$72,$00
+.BYTE $08,$60,$00
+.BYTE $08,$80,$00
+.BYTE $08,$60,$00
+.BYTE $08,$00,$18
+.BYTE $08,$72,$18
+.BYTE $08,$60,$18
+.BYTE $08,$48,$18
+.BYTE $08,$39,$00
+.BYTE $08,$18,$39
+.BYTE $08,$1C,$39
+.BYTE $08,$24,$39
+.BYTE $08,$2B,$00
+.BYTE $08,$6C,$2B
+.BYTE $08,$56,$2B
+.BYTE $08,$48,$2B
+.BYTE $08,$36,$00
+.BYTE $08,$2B,$36
+.BYTE $08,$24,$36
+.BYTE $08,$2B,$36
+.BYTE $08,$1B,$00
+.BYTE $08,$80,$1B
+.BYTE $08,$6C,$1B
+.BYTE $08,$4C,$1B
+.BYTE $08,$36,$00
+.BYTE $08,$1B,$36
+.BYTE $08,$20,$36
+.BYTE $08,$26,$36
+.BYTE $08,$30,$00
+.BYTE $08,$72,$30
+.BYTE $08,$60,$30
+.BYTE $08,$4C,$30
+.BYTE $08,$39,$00
+.BYTE $08,$30,$39
+.BYTE $08,$26,$39
+.BYTE $08,$30,$39
+.BYTE $08,$1C,$00
+.BYTE $08,$90,$1C
+.BYTE $08,$72,$1C
+.BYTE $08,$56,$1C
+.BYTE $08,$48,$00
+.BYTE $08,$1C,$48
+.BYTE $08,$24,$48
+.BYTE $08,$2B,$48
+.BYTE $08,$36,$0
+.BYTE $08,$80,$36
+.BYTE $08,$6C,$36
+.BYTE $08,$56,$36
+.BYTE $08,$40,$0
+.BYTE $08,$36,$40
+.BYTE $08,$2B,$40
+.BYTE $08,$36,$40
+.BYTE $08,$20,$00
+.BYTE $08,$98,$20
+.BYTE $08,$80,$20
+.BYTE $08,$60,$20
+.BYTE $08,$4C,$00
+.BYTE $08,$20,$4C
+.BYTE $08,$26,$4C
+.BYTE $08,$30,$4C
+.BYTE $08,$39,$00
+.BYTE $08,$90,$39
+.BYTE $08,$72,$39
+.BYTE $08,$60,$39
+.BYTE $08,$48,$0
+.BYTE $08,$24,$48
+.BYTE $08,$30,$48
+.BYTE $08,$39,$48
+.BYTE $10,$6C,$40
+.BYTE $10,$6C,$40
+.BYTE $10,$6C,$40
+.BYTE $08,$6C,$40
+.BYTE $08,$6C,$39
+.BYTE $10,$6C,$36
+.BYTE $08,$6C,$36
+.BYTE $08,$6C,$2D
+.BYTE $10,$6C,$2B
+.BYTE $08,$6C,$2B
+.BYTE $08,$6C,$22
+.BYTE $10,$6C,$20
+.BYTE $10,$6C,$20
+.BYTE $10,$6C,$20
+.BYTE $04,$6C,$1C
+.BYTE $04,$6C,$20
+.BYTE $04,$6C,$22
+.BYTE $04,$6C,$20
+.BYTE $10,$6C,$1B
+.BYTE $10,$6C,$20
+.BYTE $10,$6C,$1B
+.BYTE $10,$6C,$20
+.BYTE $08,$60,$1C
+.BYTE $08,$39,$1C
+.BYTE $08,$48,$24
+.BYTE $08,$39,$24
+.BYTE $08,$60,$18
+.BYTE $08,$39,$18
+.BYTE $08,$48,$18
+.BYTE $08,$39,$18
+.BYTE $08,$60,$18
+.BYTE $08,$39,$18
+.BYTE $08,$48,$18
+.BYTE $08,$39,$18
+.BYTE $08,$60,$1B
+.BYTE $08,$39,$1C
+.BYTE $08,$48,$20
+.BYTE $08,$39,$24
+.BYTE $04,$60,$20
+.BYTE $04,$60,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$4C,$20
+.BYTE $04,$4C,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$60,$20
+.BYTE $04,$60,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$4C,$20
+.BYTE $04,$4C,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$60,$20
+.BYTE $04,$60,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$4C,$20
+.BYTE $04,$4C,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$60,$20
+.BYTE $04,$60,$1C
+.BYTE $04,$36,$20
+.BYTE $04,$36,$1C
+.BYTE $04,$4C,$20
+.BYTE $04,$4C,$1C
+.BYTE $04,$36,$24
+.BYTE $04,$36,$20
+.BYTE $20,$48,$24
+.BYTE $08,$00,$24
+.BYTE $08,$00,$30
+.BYTE $08,$00,$24
+.BYTE $08,$00,$1C
+.BYTE $08,$00,$18
+.BYTE $08,$00,$1C
+.BYTE $08,$00,$24
+.BYTE $08,$00,$1C
+.BYTE $08,$36,$1B
+.BYTE $08,$36,$20
+.BYTE $08,$36,$26
+.BYTE $08,$36,$20
+.BYTE $20,$30,$24
+.BYTE $08,$00,$48
+.BYTE $08,$00,$60
+.BYTE $08,$00,$48
+.BYTE $08,$00,$39
+.BYTE $08,$00,$30
+.BYTE $08,$00,$39
+.BYTE $08,$00,$48
+.BYTE $08,$00,$39
+.BYTE $08,$6C,$36
+.BYTE $08,$6C,$40
+.BYTE $08,$6C,$4C
+.BYTE $08,$6C,$40
+.BYTE $01,$03,$03
+.BYTE $20,$48,$90
+.BYTE $08,$24,$00
+.BYTE $08,$30,$00
+.BYTE $08,$24,$00
+.BYTE $08,$1E,$00
+.BYTE $08,$18,$00
+.BYTE $08,$1E,$00
+.BYTE $08,$24,$00
+.BYTE $08,$1E,$00
+.BYTE $08,$1B,$36
+.BYTE $08,$20,$36
+.BYTE $08,$26,$36
+.BYTE $08,$20,$36
+.BYTE $20,$24,$3C
+.BYTE $08,$48,$00
+.BYTE $08,$60,$00
+.BYTE $08,$48,$00
+.BYTE $08,$3C,$00
+.BYTE $08,$30,$00
+.BYTE $08,$3C,$00
+.BYTE $08,$48,$00
+.BYTE $08,$3C,$00
+.BYTE $08,$36,$6C
+.BYTE $08,$40,$6C
+.BYTE $08,$4C,$6C
+.BYTE $08,$40,$6C
+.BYTE $08,$00,$48
+.BYTE $08,$90,$48
+.BYTE $08,$80,$48
+.BYTE $08,$78,$48
+.BYTE $08,$6C,$00
+.BYTE $08,$60,$00
+.BYTE $08,$56,$00
+.BYTE $08,$4C,$00
+.BYTE $08,$48,$00
+.BYTE $08,$24,$48
+.BYTE $08,$1E,$48
+.BYTE $08,$20,$48
+.BYTE $08,$24,$00
+.BYTE $08,$28,$00
+.BYTE $08,$2B,$00
+.BYTE $08,$30,$00
+.BYTE $08,$33,$00
+.BYTE $08,$80,$33
+.BYTE $08,$72,$33
+.BYTE $08,$66,$33
+.BYTE $08,$60,$00
+.BYTE $08,$56,$00
+.BYTE $08,$4C,$00
+.BYTE $08,$44,$00
+.BYTE $08,$40,$00
+.BYTE $08,$19,$40
+.BYTE $08,$15,$40
+.BYTE $08,$18,$40
+.BYTE $08,$19,$00
+.BYTE $08,$1E,$00
+.BYTE $08,$20,$00
+.BYTE $08,$24,$00
+.BYTE $20,$28,$C0
+.BYTE $08,$30,$00
+.BYTE $08,$40,$00
+.BYTE $08,$30,$00
+.BYTE $08,$28,$00
+.BYTE $08,$20,$00
+.BYTE $08,$28,$00
+.BYTE $08,$30,$00
+.BYTE $08,$28,$00
+.BYTE $08,$24,$48
+.BYTE $08,$2B,$48
+.BYTE $08,$33,$48
+.BYTE $08,$2B,$48
+.BYTE $20,$30,$50
+.BYTE $08,$60,$00
+.BYTE $08,$80,$00
+.BYTE $08,$60,$00
+.BYTE $08,$50,$00
+.BYTE $08,$40,$00
+.BYTE $08,$50,$00
+.BYTE $08,$60,$00
+.BYTE $08,$50,$00
+.BYTE $08,$48,$90
+.BYTE $08,$56,$90
+.BYTE $08,$66,$90
+.BYTE $08,$56,$90
+.BYTE $08,$60,$A0
+.BYTE $08,$60,$A0
+.BYTE $08,$56,$A0
+.BYTE $08,$50,$A0
+.BYTE $08,$48,$00
+.BYTE $08,$40,$00
+.BYTE $08,$39,$00
+.BYTE $08,$33,$00
+.BYTE $08,$30,$00
+.BYTE $08,$60,$30
+.BYTE $08,$50,$30
+.BYTE $08,$56,$30
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$72,$00
+.BYTE $08,$80,$00
+.BYTE $08,$88,$00
+.BYTE $08,$39,$88
+.BYTE $08,$36,$88
+.BYTE $08,$30,$88
+.BYTE $08,$2B,$00
+.BYTE $08,$26,$00
+.BYTE $08,$22,$00
+.BYTE $08,$20,$00
+.BYTE $08,$1C,$00
+.BYTE $08,$90,$1C
+.BYTE $08,$72,$1C
+.BYTE $08,$80,$1C
+.BYTE $08,$90,$00
+.BYTE $08,$A0,$00
+.BYTE $08,$AC,$00
+.BYTE $08,$C0,$00
+.BYTE $08,$D8,$00
+.BYTE $08,$20,$D8
+.BYTE $08,$15,$D8
+.BYTE $08,$18,$D8
+.BYTE $08,$1B,$00
+.BYTE $08,$1C,$00
+.BYTE $08,$20,$00
+.BYTE $08,$24,$00
+.BYTE $08,$28,$00
+.BYTE $08,$A0,$28
+.BYTE $08,$6C,$28
+.BYTE $08,$72,$28
+.BYTE $08,$80,$00
+.BYTE $08,$90,$00
+.BYTE $08,$A0,$00
+.BYTE $08,$AC,$00
+.BYTE $08,$C0,$00
+.BYTE $08,$24,$C0
+.BYTE $08,$18,$C0
+.BYTE $08,$1B,$C0
+.BYTE $08,$1C,$00
+.BYTE $08,$20,$00
+.BYTE $08,$24,$00
+.BYTE $08,$28,$00
+.BYTE $08,$2B,$00
+.BYTE $08,$AC,$2B
+.BYTE $08,$72,$2B
+.BYTE $08,$80,$2B
+.BYTE $08,$90,$00
+.BYTE $08,$A0,$00
+.BYTE $08,$AC,$00
+.BYTE $08,$C0,$00
+.BYTE $08,$D8,$00
+.BYTE $08,$28,$D8
+.BYTE $08,$1B,$D8
+.BYTE $08,$1C,$D8
+.BYTE $08,$20,$00
+.BYTE $08,$24,$00
+.BYTE $08,$28,$00
+.BYTE $08,$2B,$00
+.BYTE $08,$30,$00
+.BYTE $08,$72,$30
+.BYTE $08,$50,$30
+.BYTE $08,$56,$30
+.BYTE $08,$60,$00
+.BYTE $08,$6C,$00
+.BYTE $08,$72,$00
+.BYTE $08,$80,$00
+.BYTE $08,$88,$00
+.BYTE $08,$2B,$88
+.BYTE $08,$1C,$88
+.BYTE $08,$20,$88
+.BYTE $08,$22,$00
+.BYTE $08,$28,$00
+.BYTE $08,$2B,$00
+.BYTE $08,$30,$00
+.BYTE $08,$36,$00
+.BYTE $08,$80,$36
+.BYTE $08,$6C,$36
+.BYTE $08,$72,$36
+.BYTE $08,$80,$00
+.BYTE $08,$90,$00
+.BYTE $08,$A0,$00
+.BYTE $08,$AC,$00
+.BYTE $08,$C0,$00
+.BYTE $08,$3C,$C0
+.BYTE $08,$30,$C0
+.BYTE $08,$36,$C0
+.BYTE $08,$3C,$C0
+.BYTE $08,$40,$C0
+.BYTE $08,$48,$C0
+.BYTE $08,$50,$C0
+.BYTE $08,$56,$78
+.BYTE $08,$50,$78
+.BYTE $08,$48,$78
+.BYTE $08,$40,$78
+.BYTE $08,$3C,$78
+.BYTE $08,$36,$78
+.BYTE $08,$30,$78
+.BYTE $08,$2B,$78
+.BYTE $01,$02,$02
+.BYTE $10,$50,$28
+.BYTE $10,$36,$28
+.BYTE $10,$40,$28
+.BYTE $10,$36,$28
+.BYTE $10,$50,$20
+.BYTE $10,$36,$20
+.BYTE $10,$40,$1B
+.BYTE $10,$36,$1B
+.BYTE $10,$48,$2B
+.BYTE $10,$36,$2B
+.BYTE $10,$3C,$2B
+.BYTE $08,$36,$28
+.BYTE $08,$36,$24
+.BYTE $10,$50,$28
+.BYTE $10,$36,$28
+.BYTE $10,$40,$00
+.BYTE $10,$36,$00
+.BYTE $10,$50,$18
+.BYTE $10,$30,$18
+.BYTE $10,$3C,$18
+.BYTE $10,$30,$18
+.BYTE $10,$50,$1B
+.BYTE $10,$36,$1B
+.BYTE $10,$40,$14
+.BYTE $10,$36,$14
+.BYTE $10,$56,$1B
+.BYTE $10,$36,$1B
+.BYTE $04,$48,$1B
+.BYTE $04,$48,$1E
+.BYTE $04,$48,$1B
+.BYTE $04,$48,$1E
+.BYTE $08,$36,$20
+.BYTE $08,$36,$1E
+.BYTE $10,$50,$20
+.BYTE $10,$36,$20
+.BYTE $10,$40,$00
+.BYTE $10,$36,$00
+.BYTE $10,$3C,$30
+.BYTE $08,$3C,$2B
+.BYTE $08,$3C,$28
+.BYTE $08,$00,$24
+.BYTE $08,$00,$20
+.BYTE $08,$00,$1E
+.BYTE $08,$00,$1B
+.BYTE $08,$00,$18
+.BYTE $08,$00,$1B
+.BYTE $08,$00,$1E
+.BYTE $08,$00,$20
+.BYTE $08,$00,$24
+.BYTE $08,$3C,$28
+.BYTE $08,$3C,$2B
+.BYTE $08,$3C,$30
+.BYTE $10,$40,$36
+.BYTE $08,$40,$30
+.BYTE $08,$40,$2B
+.BYTE $08,$00,$28
+.BYTE $08,$00,$24
+.BYTE $08,$00,$20
+.BYTE $08,$00,$1E
+.BYTE $08,$00,$1B
+.BYTE $08,$00,$1E
+.BYTE $08,$00,$20
+.BYTE $08,$00,$24
+.BYTE $08,$40,$28
+.BYTE $08,$40,$2B
+.BYTE $08,$40,$30
+.BYTE $08,$40,$36
+.BYTE $10,$48,$3C
+.BYTE $08,$48,$36
+.BYTE $08,$48,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$28
+.BYTE $08,$00,$24
+.BYTE $08,$00,$20
+.BYTE $08,$00,$1E
+.BYTE $08,$00,$20
+.BYTE $08,$00,$24
+.BYTE $08,$00,$28
+.BYTE $08,$00,$2B
+.BYTE $08,$48,$30
+.BYTE $08,$48,$36
+.BYTE $08,$48,$3C
+.BYTE $10,$50,$40
+.BYTE $08,$50,$3C
+.BYTE $08,$50,$36
+.BYTE $08,$00,$30
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$28
+.BYTE $08,$00,$24
+.BYTE $08,$00,$20
+.BYTE $08,$00,$24
+.BYTE $08,$00,$28
+.BYTE $08,$00,$2B
+.BYTE $08,$50,$30
+.BYTE $08,$50,$36
+.BYTE $08,$50,$3C
+.BYTE $08,$50,$40
+.BYTE $10,$30,$48
+.BYTE $08,$30,$40
+.BYTE $08,$30,$3C
+.BYTE $08,$30,$36
+.BYTE $08,$30,$30
+.BYTE $08,$30,$2B
+.BYTE $08,$30,$26
+.BYTE $08,$30,$24
+.BYTE $08,$30,$30
+.BYTE $08,$30,$2B
+.BYTE $08,$30,$26
+.BYTE $08,$30,$24
+.BYTE $08,$30,$20
+.BYTE $08,$30,$1E
+.BYTE $08,$30,$1B
+.BYTE $08,$3C,$18
+.BYTE $08,$3C,$15
+.BYTE $08,$3C,$14
+.BYTE $08,$3C,$15
+.BYTE $08,$3C,$18
+.BYTE $08,$3C,$1B
+.BYTE $08,$36,$1E
+.BYTE $08,$36,$20
+.BYTE $08,$30,$1E
+.BYTE $08,$30,$1B
+.BYTE $08,$30,$18
+.BYTE $08,$30,$1B
+.BYTE $08,$30,$1E
+.BYTE $08,$30,$20
+.BYTE $08,$44,$24
+.BYTE $08,$44,$28
+.BYTE $08,$6C,$2B
+.BYTE $08,$56,$2B
+.BYTE $08,$48,$1B
+.BYTE $08,$36,$1B
+.BYTE $08,$6C,$20
+.BYTE $08,$56,$20
+.BYTE $08,$48,$28
+.BYTE $08,$36,$28
+.BYTE $08,$6C,$24
+.BYTE $08,$56,$24
+.BYTE $08,$48,$1B
+.BYTE $08,$36,$1B
+.BYTE $08,$6C,$20
+.BYTE $08,$56,$20
+.BYTE $08,$48,$28
+.BYTE $08,$36,$28
+.BYTE $20,$6C,$24
+.BYTE $20,$36,$1B
+.BYTE $20,$6C,$36
+.BYTE $20,$6C,$6B
+.BYTE $08,$4C,$00
+.BYTE $08,$48,$00
+.BYTE $08,$4C,$00
+.BYTE $08,$48,$00
+.BYTE $08,$4C,$00
+.BYTE $08,$48,$00
+.BYTE $08,$4C,$00
+.BYTE $08,$48,$00
+.BYTE $08,$50,$00
+.BYTE $08,$48,$00
+.BYTE $08,$50,$00
+.BYTE $08,$48,$00
+.BYTE $08,$50,$00
+.BYTE $08,$48,$00
+.BYTE $08,$50,$00
+.BYTE $08,$48,$00
+.BYTE $08,$56,$12
+.BYTE $08,$48,$12
+.BYTE $08,$56,$15
+.BYTE $08,$48,$15
+.BYTE $08,$56,$1B
+.BYTE $08,$48,$1B
+.BYTE $08,$56,$1B
+.BYTE $08,$48,$1B
+.BYTE $08,$56,$1B
+.BYTE $08,$48,$1B
+.BYTE $08,$56,$18
+.BYTE $08,$48,$15
+.BYTE $08,$56,$18
+.BYTE $08,$48,$18
+.BYTE $08,$56,$1B
+.BYTE $08,$48,$1B
+.BYTE $04,$50,$18
+.BYTE $04,$50,$1B
+.BYTE $04,$48,$18
+.BYTE $04,$48,$1B
+.BYTE $04,$56,$1C
+.BYTE $04,$56,$1B
+.BYTE $08,$48,$1C
+.BYTE $08,$60,$1C
+.BYTE $08,$48,$1C
+.BYTE $08,$56,$1C
+.BYTE $08,$48,$1C
+.BYTE $08,$50,$00
+.BYTE $08,$48,$00
+.BYTE $08,$56,$00
+.BYTE $08,$48,$00
+.BYTE $08,$50,$00
+.BYTE $08,$48,$00
+.BYTE $08,$60,$00
+.BYTE $08,$48,$00
+.BYTE $08,$56,$12
+.BYTE $08,$48,$12
+.BYTE $08,$56,$15
+.BYTE $08,$48,$15
+.BYTE $08,$56,$1B
+.BYTE $08,$48,$1B
+.BYTE $08,$56,$1B
+.BYTE $08,$48,$1B
+.BYTE $08,$56,$1B
+.BYTE $08,$48,$1B
+.BYTE $08,$56,$18
+.BYTE $08,$48,$15
+.BYTE $08,$56,$18
+.BYTE $08,$48,$18
+.BYTE $08,$56,$1B
+.BYTE $08,$48,$1B
+.BYTE $04,$50,$18
+.BYTE $04,$50,$1B
+.BYTE $04,$48,$18
+.BYTE $04,$48,$1B
+.BYTE $04,$56,$1C
+.BYTE $04,$56,$1B
+.BYTE $08,$48,$1C
+.BYTE $08,$60,$1C
+.BYTE $08,$48,$1C
+.BYTE $08,$56,$1C
+.BYTE $08,$48,$1C
+.BYTE $08,$50,$00
+.BYTE $08,$48,$00
+.BYTE $08,$56,$00
+.BYTE $08,$48,$00
+.BYTE $08,$60,$00
+.BYTE $08,$48,$00
+.BYTE $08,$00,$12
+.BYTE $08,$56,$12
+.BYTE $08,$48,$12
+.BYTE $08,$36,$12
+.BYTE $08,$2B,$00
+.BYTE $08,$12,$2B
+.BYTE $08,$15,$2B
+.BYTE $08,$1B,$2B
+.BYTE $08,$20,$00
+.BYTE $08,$50,$20
+.BYTE $08,$40,$20
+.BYTE $08,$36,$20
+.BYTE $08,$28,$00
+.BYTE $08,$20,$28
+.BYTE $08,$1B,$28
+.BYTE $08,$20,$28
+.BYTE $08,$14,$00
+.BYTE $08,$60,$14
+.BYTE $08,$50,$14
+.BYTE $08,$39,$14
+.BYTE $08,$28,$00
+.BYTE $08,$14,$28
+.BYTE $08,$18,$28
+.BYTE $08,$1C,$28
+.BYTE $08,$24,$00
+.BYTE $08,$56,$24
+.BYTE $08,$48,$24
+.BYTE $08,$39,$24
+.BYTE $08,$2B,$00
+.BYTE $08,$24,$2B
+.BYTE $08,$1C,$2B
+.BYTE $08,$24,$2B
+.BYTE $08,$15,$00
+.BYTE $08,$6C,$15
+.BYTE $08,$56,$15
+.BYTE $08,$40,$15
+.BYTE $08,$36,$00
+.BYTE $08,$15,$36
+.BYTE $08,$1B,$36
+.BYTE $08,$20,$36
+.BYTE $08,$28,$00
+.BYTE $08,$60,$28
+.BYTE $08,$50,$28
+.BYTE $08,$40,$28
+.BYTE $08,$30,$00
+.BYTE $08,$28,$30
+.BYTE $08,$20,$30
+.BYTE $08,$28,$30
+.BYTE $08,$18,$00
+.BYTE $08,$72,$18
+.BYTE $08,$60,$18
+.BYTE $08,$48,$18
+.BYTE $08,$39,$00
+.BYTE $08,$18,$39
+.BYTE $08,$1C,$39
+.BYTE $08,$24,$39
+.BYTE $08,$2B,$00
+.BYTE $08,$6C,$2B
+.BYTE $08,$56,$2B
+.BYTE $08,$48,$2B
+.BYTE $08,$36,$00
+.BYTE $08,$1B,$36
+.BYTE $08,$24,$36
+.BYTE $08,$2B,$36
+.BYTE $10,$50,$30
+.BYTE $10,$50,$30
+.BYTE $10,$50,$30
+.BYTE $08,$50,$30
+.BYTE $08,$50,$2B
+.BYTE $10,$50,$28
+.BYTE $08,$50,$28
+.BYTE $08,$50,$22
+.BYTE $10,$50,$20
+.BYTE $08,$50,$20
+.BYTE $08,$50,$19
+.BYTE $10,$50,$18
+.BYTE $10,$50,$18
+.BYTE $10,$50,$18
+.BYTE $04,$50,$15
+.BYTE $04,$50,$18
+.BYTE $04,$50,$19
+.BYTE $04,$50,$18
+.BYTE $10,$50,$14
+.BYTE $10,$50,$18
+.BYTE $10,$50,$14
+.BYTE $10,$50,$18
+.BYTE $08,$48,$15
+.BYTE $08,$2B,$15
+.BYTE $08,$36,$1B
+.BYTE $08,$2B,$1B
+.BYTE $08,$48,$12
+.BYTE $08,$2B,$12
+.BYTE $08,$36,$12
+.BYTE $08,$2B,$12
+.BYTE $08,$48,$12
+.BYTE $08,$2B,$12
+.BYTE $08,$36,$12
+.BYTE $08,$2B,$12
+.BYTE $08,$48,$14
+.BYTE $08,$2B,$15
+.BYTE $08,$36,$18
+.BYTE $08,$2B,$1B
+.BYTE $04,$48,$18
+.BYTE $04,$48,$15
+.BYTE $04,$28,$18
+.BYTE $04,$28,$15
+.BYTE $04,$39,$18
+.BYTE $04,$39,$15
+.BYTE $04,$28,$18
+.BYTE $04,$28,$15
+.BYTE $04,$48,$18
+.BYTE $04,$48,$15
+.BYTE $04,$28,$18
+.BYTE $04,$28,$15
+.BYTE $04,$39,$18
+.BYTE $04,$39,$15
+.BYTE $04,$28,$18
+.BYTE $04,$28,$15
+.BYTE $04,$48,$18
+.BYTE $04,$48,$15
+.BYTE $04,$28,$18
+.BYTE $04,$28,$15
+.BYTE $04,$39,$18
+.BYTE $04,$39,$15
+.BYTE $04,$28,$18
+.BYTE $04,$28,$15
+.BYTE $04,$48,$18
+.BYTE $04,$48,$15
+.BYTE $04,$28,$18
+.BYTE $04,$28,$15
+.BYTE $04,$39,$18
+.BYTE $04,$39,$15
+.BYTE $04,$28,$1B
+.BYTE $04,$28,$18
+.BYTE $20,$36,$1B
+.BYTE $01,$01,$01
+.BYTE $08,$00,$1B
+.BYTE $08,$00,$24
+.BYTE $08,$00,$1B
+.BYTE $08,$00,$15
+.BYTE $08,$00,$12
+.BYTE $08,$00,$15
+.BYTE $08,$00,$1B
+.BYTE $08,$00,$15
+.BYTE $08,$28,$14
+.BYTE $08,$28,$18
+.BYTE $08,$28,$1C
+.BYTE $08,$28,$18
+.BYTE $20,$24,$1B
+.BYTE $08,$00,$36
+.BYTE $08,$00,$48
+.BYTE $08,$00,$36
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$24
+.BYTE $08,$00,$2B
+.BYTE $08,$00,$36
+.BYTE $08,$00,$2B
+.BYTE $08,$50,$28
+.BYTE $08,$50,$30
+.BYTE $08,$50,$39
+.BYTE $08,$50,$30
+.BYTE $20,$56,$36
+.BYTE $20,$6C,$15
+.BYTE $20,$6C,$1B
+.BYTE $00,$00,$00 ; END
+
