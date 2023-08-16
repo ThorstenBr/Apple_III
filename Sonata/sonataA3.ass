@@ -3,6 +3,9 @@
 ; Mozart's "Eine kleine Klavier-Sonate fuer Anfaenger" ("Little piano sonata for beginners")
 ; Mozart, K 545
 
+        .PROC SOSSONATA
+	.SEGMENT "RAM"
+
 ; APPLE3 ROM ROUTINES
 	CLRSCR = $FB7D  ; ROM
 	COUT   = $FC39
@@ -34,6 +37,9 @@
 ; SPEAKER to be used
 	SPEAKER     = SOUND_CLICK
 
+; SOS Commands
+	TERMINATE   = $65
+
 ; ZERO PAGE VARIABLES
 	V1=$90
 	V2=$91
@@ -46,64 +52,102 @@
 	DataH=$98
 
 .macro  print   MSG
-        LDA #<MSG
-        STA DataL
-	LDA #>MSG
-        STA DataH
+        LDY #<(MSG-MSGS)
         JSR PRINT
 .endmacro
 
-	.org $A200
-START:
+; generate Apple-ASCII string (with MSB set)
+.MACRO   ASCHI STR
+.REPEAT  .STRLEN (STR), C
+.BYTE    .STRAT (STR, C) | $80
+.ENDREP
+.ENDMACRO
+
+;
+;       Macros, Equates, and Global Data Area
+;
+;       The syntax for a SOS call using the macro below is
+;
+;       SOS     call_num, parameter_list pointer
+;
+        .MACRO  SOS CALL,PARAM  ; Macro def for SOS call block
+        BRK                     ; Begin SOS call block
+        .BYTE   CALL            ; call_num
+        .WORD   PARAM           ; parameter_list pointer
+        .ENDMACRO               ; end of macro definition
+
+
+;
+; Interpreter Header
+;
+CODE_AREA     = $7000
+CODESTART     = CODE_AREA
+        .ORG    CODESTART-$0E   ; Leave 14 bytes for header
+
+        .BYTE   "SOS NTRP"      ; 8 bytes, fixed label for SOS.INTERP
+        .WORD   $0000           ; 2 bytes, opt_header_length = 0 (if >0, then additional data follows this element)
+        .WORD   CODESTART       ; 2 bytes, loading_address
+        .WORD   CODELEN         ; 2 bytes, code_length, size of program without header
+                                ; Interpreters are always ABSOLUTE code, starting at a fixed location.
+
+        JMP     BEGIN           ; Jump to beginning of code
+;
+
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;        Terminate:  terminate the program
+;
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+Terminate:
+          SOS TERMINATE,BYEPARM
+BYEPARM:  .BYTE 0        ; must be 0
+
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;        Main
+;
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+BEGIN:
 	LDA ENVREG
-	ORA #$F2	; switch ROM and 1MHz
+	ORA #1+2+$40+$80 ; enable ROM,IO and 1MHz operation
 	STA ENVREG
 
 	; clear keypress
 	STA KBDSTRB
 
-	JSR CLRSCR
+        ; simply switch hardware to 40column text mode
+	LDA $C056 ; HIRES=0
+	LDA $C052 ; MIX=0
+	LDA $C050 ; GR/TEXT=0
+	LDA $C054
 
-	; move cursor down
-	LDA #8
-	STA CV
-	LDA #30
-	JSR SETCVH
-
-	print TITLE1
-
-	LDA #11
-	STA CV
-	LDA #4
-	JSR SETCVH
-	print TITLE2
+        ; print a simple message
+	print TITLE
 
 	CLD
 	JSR MAIN         ; play music
 
 	; clear keypress
 	STA KBDSTRB
-	
-	; return to caller
-	RTS
 
-TITLE1:
-	.BYTE "MOZART",$00
-TITLE2:
-	.BYTE "LITTLE SONATA FOR THE APPLE ///",$00
+	JMP Terminate
 
-.proc PRINT
-	LDY #0
+MSGS:
+TITLE:
+	ASCHI "   MOZART - LITTLE SONATA FOR APPLE ///"
+	.BYTE $00
+
+PRINT:
 @next:
-	LDA (DataL),Y
+	LDA MSGS,Y
 	BEQ @last
-	ORA #$80
-	JSR COUT
+	STA $05A8,Y
 	INY
 	BNE @next
 @last:
 	RTS
-.endproc
 
 MAIN:
 	; init
@@ -1658,4 +1702,17 @@ SONATA_DATA:
 .BYTE $20,$6C,$15
 .BYTE $20,$6C,$1B
 .BYTE $00,$00,$00 ; END
+
+;*****************************************************************
+
+;*****************************************************************
+;
+;        End of program -- calculate length
+;
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+CODELEN =       *-CODESTART     ; Calculate number of bytes in
+        .ENDPROC                ;    program
+
+;*****************************************************************
 
