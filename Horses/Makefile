@@ -1,5 +1,5 @@
-SOURCE := sonataA3.ass
-NAME   := SOS.SONATA
+SOURCE := horses.ass
+NAME   := SOS.HORSES
 BIN    := bin/$(NAME)
 DISK   := bin/$(NAME).po
 
@@ -12,10 +12,10 @@ AppleCommander := java -jar $(TOOLS)/AppleCommander/AppleCommander-ac-1.8.0.jar
 IP     := 192.168.178.65
 VOLUME := /SD2/VOL0C.PO
 
-all: $(BIN)
+all: $(BIN) $(DISK)
 
 clean:
-	rm $(BIN)
+	rm $(BIN) $(DISK) $(DISK:.dsk=.po)
 
 bin:
 	- mkdir bin
