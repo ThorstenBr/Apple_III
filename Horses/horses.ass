@@ -103,8 +103,6 @@ HORSELOOP: TXA
            ORA     #$40        ; enable IO access
            STA     ENVREG
            LDA     KBD_DATA    ; key pressed?
-           CMP     #' '        ; space bar?
-           BEQ     :+
            CMP     #27         ; ESC?
            BNE     HORSELOOP   ; hop hop hop...
 
